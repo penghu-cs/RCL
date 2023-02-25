@@ -1,9 +1,9 @@
-# RCL-SGRAF
+# RCL
 *PyTorch implementation for IEEE TPAMI 2023 paper of [**“Cross-Modal Retrieval with Partially Mismatched Pairs”**](https://doi.org/10.1109/TPAMI.2023.3247939).* 
 
-*It is built on top of the [SCAN](https://github.com/kuanghuei/SCAN) and [SGRAF](https://github.com/Paranioar/SGRAF).* 
+*It could be easily built on top of the other cross-modal methods, e.g., [SCAN](https://github.com/kuanghuei/SCAN), [GSMN](https://github.com/CrossmodalGroup/GSMN), [SGRAF](https://github.com/Paranioar/SGRAF), etc.* 
 
-<!-- *We have released two versions of SGRAF: **Branch `main` for python2.7**; **Branch `python3.6` for python3.6**.*  -->
+*We have released two versions of RCL, i.e., RCL-SGRAF and RCL-GSMN.*
 
 ## Introduction
 
