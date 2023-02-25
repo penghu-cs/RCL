@@ -1,7 +1,7 @@
 # RCL
 *PyTorch implementation for IEEE TPAMI 2023 paper of [**“Cross-Modal Retrieval with Partially Mismatched Pairs”**](https://doi.org/10.1109/TPAMI.2023.3247939).* 
 
-*It could be easily built on top of the other cross-modal methods, e.g., [SCAN](https://github.com/kuanghuei/SCAN), [GSMN](https://github.com/CrossmodalGroup/GSMN), [SGRAF](https://github.com/Paranioar/SGRAF), etc.* 
+*It could be easily built on top of the other cross-modal methods, e.g., [VSRN](https://github.com/KunpengLi1994/VSRN), [GSMN](https://github.com/CrossmodalGroup/GSMN), [SGRAF](https://github.com/Paranioar/SGRAF), etc.* 
 
 *We have released two versions of RCL, i.e., RCL-SGRAF and RCL-GSMN.*
 
@@ -53,6 +53,7 @@ class CCL(nn.Module):
             raise Exception('Unknown Loss Function!')
         return criterion(i2t) + criterion(t2i)
 ```
+Our CCL could be directly used to train cross-modal models to improve robustness by replacing widely-used losses, e.g., triplet loss, etc.
 
 ## Experimental results
 **TABLE 2: Image-text matching with different mismatching rates (MRate) on MS-COCO 1K and Flickr30K.**
