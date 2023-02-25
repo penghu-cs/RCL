@@ -3,7 +3,7 @@
 
 *It could be easily built on top of the other cross-modal methods, e.g., [VSRN](https://github.com/KunpengLi1994/VSRN), [GSMN](https://github.com/CrossmodalGroup/GSMN), [SGRAF](https://github.com/Paranioar/SGRAF), etc.* 
 
-*We have released two versions of RCL, i.e., RCL-SGRAF and RCL-GSMN.*
+*We have released two versions of RCL, i.e., [RCL-SGRAF](https://github.com/penghu-cs/RCL/tree/main/RCL-SGRAF) and RCL-GSMN.*
 
 ## Introduction
 
