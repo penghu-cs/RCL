@@ -1,0 +1,446 @@
+"""Evaluation"""
+
+from __future__ import print_function
+import os
+import sys
+import time
+
+import torch
+import numpy as np
+
+from data import get_test_loader
+from vocab import Vocabulary, deserialize_vocab
+from model import SGRAF
+from collections import OrderedDict
+
+
+class AverageMeter(object):
+    """Computes and stores the average and current value"""
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.val = 0
+        self.avg = 0
+        self.sum = 0
+        self.count = 0
+
+    def update(self, val, n=0):
+        self.val = val
+        self.sum += val * n
+        self.count += n
+        self.avg = self.sum / (.0001 + self.count)
+
+    def __str__(self):
+        """String representation for logging
+        """
+        # for values that should be recorded exactly e.g. iteration number
+        if self.count == 0:
+            return str(self.val)
+        # for stats
+        return '%.4f (%.4f)' % (self.val, self.avg)
+
+
+class LogCollector(object):
+    """A collection of logging objects that can change from train to val"""
+
+    def __init__(self):
+        # to keep the order of logged variables deterministic
+        self.meters = OrderedDict()
+
+    def update(self, k, v, n=0):
+        # create a new meter if previously not recorded
+        if k not in self.meters:
+            self.meters[k] = AverageMeter()
+        self.meters[k].update(v, n)
+
+    def __str__(self):
+        """Concatenate the meters in one log line
+        """
+        s = ''
+        for i, (k, v) in enumerate(self.meters.items()):
+            if i > 0:
+                s += '  '
+            s += k + ' ' + str(v)
+        return s
+
+    def tb_log(self, tb_logger, prefix='', step=None):
+        """Log using tensorboard
+        """
+        for k, v in self.meters.items():
+            tb_logger.log_value(prefix + k, v.val, step=step)
+
+
+def encode_data(model, data_loader, log_step=10, logging=print):
+    """Encode all images and captions loadable by `data_loader`
+    """
+    val_logger = LogCollector()
+
+    # switch to evaluate mode
+    model.val_start()
+
+    # np array to keep all the embeddings
+    img_embs = None
+    cap_embs = None
+
+    max_n_word = 0
+    for i, (images, captions, lengths, ids) in enumerate(data_loader):
+        max_n_word = max(max_n_word, max(lengths))
+
+    for i, (images, captions, lengths, ids) in enumerate(data_loader):
+        # make sure val logger is used
+        model.logger = val_logger
+
+        # compute the embeddings
+        with torch.no_grad():
+            img_emb, cap_emb, cap_len = model.forward_emb(images, captions, lengths)
+        if img_embs is None:
+            img_embs = np.zeros((len(data_loader.dataset), img_emb.size(1), img_emb.size(2)))
+            cap_embs = np.zeros((len(data_loader.dataset), max_n_word, cap_emb.size(2)))
+            cap_lens = [0] * len(data_loader.dataset)
+        # cache embeddings
+        img_embs[ids] = img_emb.data.cpu().numpy().copy()
+        cap_embs[ids, :max(lengths), :] = cap_emb.data.cpu().numpy().copy()
+
+        for j, nid in enumerate(ids):
+            cap_lens[nid] = cap_len[j]
+
+        del images, captions
+    return img_embs, cap_embs, cap_lens
+
+
+def evalrank(config, model_path, data_path=None, split='dev', fold5=False):
+    """
+    Evaluate a trained model on either dev or test. If `fold5=True`, 5 fold
+    cross-validation is done (only for MSCOCO). Otherwise, the full data is
+    used for evaluation.
+    """
+    # load model and options
+    checkpoint = torch.load(model_path)
+    opt = checkpoint['opt']
+    opt.data_path = config.data_path
+    opt.vocab_path = config.vocab_path
+    opt.loss = config.loss
+    opt.tau = config.tau
+    opt.ratio = config.ratio
+    save_epoch = checkpoint['epoch']
+    print(opt)
+    if data_path is not None:
+        opt.data_path = data_path
+
+    # load vocabulary used by the model
+    vocab = deserialize_vocab(os.path.join(opt.vocab_path, '%s_vocab.json' % opt.data_name))
+    vocab.add_word('<mask>')
+    opt.vocab_size = len(vocab)
+
+    # construct model
+    model = SGRAF(opt)
+
+    # load model state
+    model.load_state_dict(checkpoint['model'])
+
+    print('Loading dataset')
+    data_loader = get_test_loader(split, opt.data_name, vocab,
+                                  opt.batch_size, opt.workers, opt)
+    print("=> loaded checkpoint_epoch {}".format(save_epoch))
+
+    print('Computing results...')
+    img_embs, cap_embs, cap_lens = encode_data(model, data_loader)
+    print('Images: %d, Captions: %d' %
+          (img_embs.shape[0] / 5, cap_embs.shape[0]))
+
+    if not fold5:
+        # no cross-validation, full evaluation
+        img_embs = np.array([img_embs[i] for i in range(0, len(img_embs), 5)])
+
+        # record computation time of validation
+        start = time.time()
+        sims = shard_attn_scores(model, img_embs, cap_embs, cap_lens, opt, shard_size=100)
+        end = time.time()
+        print("calculate similarity time:", end-start)
+
+        # bi-directional retrieval
+        r, rt = i2t(img_embs, cap_embs, cap_lens, sims, return_ranks=True)
+        ri, rti = t2i(img_embs, cap_embs, cap_lens, sims, return_ranks=True)
+        ar = (r[0] + r[1] + r[2]) / 3
+        ari = (ri[0] + ri[1] + ri[2]) / 3
+        rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
+        print("rsum: %.1f" % rsum)
+        print("Average i2t Recall: %.1f" % ar)
+        print("Image to text: %.1f %.1f %.1f %.1f %.1f" % r)
+        print("Average t2i Recall: %.1f" % ari)
+        print("Text to image: %.1f %.1f %.1f %.1f %.1f" % ri)
+    else:
+        # 5fold cross-validation, only for MSCOCO
+        results = []
+        for i in range(5):
+            img_embs_shard = img_embs[i * 5000:(i + 1) * 5000:5]
+            cap_embs_shard = cap_embs[i * 5000:(i + 1) * 5000]
+            cap_lens_shard = cap_lens[i * 5000:(i + 1) * 5000]
+
+            start = time.time()
+            sims = shard_attn_scores(model, img_embs_shard, cap_embs_shard, cap_lens_shard, opt, shard_size=100)
+            end = time.time()
+            print("calculate similarity time:", end-start)
+
+            r, rt0 = i2t(img_embs_shard, cap_embs_shard, cap_lens_shard, sims, return_ranks=True)
+            print("Image to text: %.1f, %.1f, %.1f, %.1f, %.1f" % r)
+            ri, rti0 = t2i(img_embs_shard, cap_embs_shard, cap_lens_shard, sims, return_ranks=True)
+            print("Text to image: %.1f, %.1f, %.1f, %.1f, %.1f" % ri)
+
+            if i == 0:
+                rt, rti = rt0, rti0
+            ar = (r[0] + r[1] + r[2]) / 3
+            ari = (ri[0] + ri[1] + ri[2]) / 3
+            rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
+            print("rsum: %.1f ar: %.1f ari: %.1f" % (rsum, ar, ari))
+            results += [list(r) + list(ri) + [ar, ari, rsum]]
+
+        print("-----------------------------------")
+        print("Mean metrics: ")
+        mean_metrics = tuple(np.array(results).mean(axis=0).flatten())
+        print("rsum: %.1f" % (mean_metrics[10] * 6))
+        print("Average i2t Recall: %.1f" % mean_metrics[11])
+        print("Image to text: %.1f %.1f %.1f %.1f %.1f" %
+              mean_metrics[:5])
+        print("Average t2i Recall: %.1f" % mean_metrics[12])
+        print("Text to image: %.1f %.1f %.1f %.1f %.1f" %
+              mean_metrics[5:10])
+
+def evaluation(config, model_path=None, data_path=None, split='dev', fold5=False):
+    if model_path is None:
+        # if config.module_name == 'SGRAF':
+        #     model_path = [config.model_name + '/' + ('%s_%s_model_best_%g.pth.tar' % (config.data_name, module_name, config.noise_rate)) for module_name in ['SAF', 'SGR']]
+        #     module_names = ['SAF', 'SGR', 'SGRAF']
+        # else:
+        #     model_path = [config.model_name + '/' + ('%s_%s_model_best_%g.pth.tar' % (config.data_name, config.module_name, config.noise_rate))]
+        #     module_names = [config.module_name]
+        model_path = config.model_path
+        module_names = config.module_names
+    else:
+        model_path = [model_path]
+        module_names = []
+
+    sims_list = []
+    for path in model_path:
+        # load model and options
+        checkpoint = torch.load(path)
+        opt = checkpoint['opt']
+        if len(module_names) == 0:
+            module_names.append(opt.module_name)
+        save_epoch = checkpoint['epoch']
+        print(opt)
+        # if data_path is not None:
+        #     opt.data_path = data_path
+        # else:
+        module = opt.module_name
+        opt = config
+        opt.module_name = module
+        # opt.data_path = config.data_path
+
+        # load vocabulary used by the model
+        vocab = deserialize_vocab(os.path.join(opt.vocab_path, '%s_vocab.json' % opt.data_name))
+        vocab.add_word('<mask>')
+        opt.vocab_size = len(vocab)
+
+        try:
+            # construct model
+            model = SGRAF(opt)
+
+            # load model state
+            model.load_state_dict(checkpoint['model'])
+        except Exception as e:
+            opt.vocab_size = opt.vocab_size - 1
+            # construct model
+            model = SGRAF(opt)
+
+            # load model state
+            model.load_state_dict(checkpoint['model'])
+
+        print('Loading dataset')
+        data_loader = get_test_loader(split, opt.data_name, vocab,
+                                      opt.batch_size, opt.workers, opt)
+        print("=> loaded checkpoint_epoch {}".format(save_epoch))
+
+        print('Computing results...')
+        img_embs, cap_embs, cap_lens = encode_data(model, data_loader)
+        img_div = 1 if 'cc152k' in config.data_name else 5# int(cap_embs.shape[0] / img_embs.shape[0])
+        print('Images: %d, Captions: %d' %
+              (img_embs.shape[0] / img_div, cap_embs.shape[0]))
+
+        sims_list.append([])
+        if not fold5:
+            img_embs = np.array([img_embs[i] for i in range(0, len(img_embs), img_div)])
+            start = time.time()
+            sims = shard_attn_scores(model, img_embs, cap_embs, cap_lens, opt, shard_size=100)
+            end = time.time()
+            print("calculate similarity time:", end-start)
+            sims_list[-1].append(sims)
+        else:
+            for i in range(5):
+                img_embs_shard = img_embs[i * 5000:(i + 1) * 5000:5]
+                cap_embs_shard = cap_embs[i * 5000:(i + 1) * 5000]
+                cap_lens_shard = cap_lens[i * 5000:(i + 1) * 5000]
+
+                start = time.time()
+                sims = shard_attn_scores(model, img_embs_shard, cap_embs_shard, cap_lens_shard, opt, shard_size=100)
+                end = time.time()
+                print("calculate similarity time:", end-start)
+                sims_list[-1].append(sims)
+    if len(sims_list) >= 2:
+        sims_list_tmp = []
+        for i in range(len(sims_list[0])):
+            sim_tmp = 0
+            for j in range(len(sims_list)):
+                sim_tmp = sim_tmp + sims_list[j][i]
+            sim_tmp /= len(sims_list)
+            sims_list_tmp.append(sim_tmp)
+        sims_list.append(sims_list_tmp)
+
+
+    for j in range(len(sims_list)):
+        if not fold5:
+            sims = sims_list[j][0]
+            # bi-directional retrieval
+            r, rt = i2t(None, None, None, sims, return_ranks=True, img_div=img_div)
+            ri, rti = t2i(None, None, None, sims, return_ranks=True, img_div=img_div)
+            ar = (r[0] + r[1] + r[2]) / 3
+            ari = (ri[0] + ri[1] + ri[2]) / 3
+            rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
+            print("-----------------%s------------------" % module_names[j])
+            print("rsum: %.1f" % rsum)
+            print("Average i2t Recall: %.1f" % ar)
+            print("Image to text: %.1f %.1f %.1f %.1f %.1f" % r)
+            print("Average t2i Recall: %.1f" % ari)
+            print("Text to image: %.1f %.1f %.1f %.1f %.1f" % ri)
+            print("---------------------------------------")
+        else:
+            # 5fold cross-validation, only for MSCOCO
+            results = []
+            for i in range(5):
+                sims = sims_list[j][i]
+
+                r, rt0 = i2t(None, None, None, sims, return_ranks=True)
+                print("Image to text: %.1f, %.1f, %.1f, %.1f, %.1f" % r)
+                ri, rti0 = t2i(None, None, None, sims, return_ranks=True)
+                print("Text to image: %.1f, %.1f, %.1f, %.1f, %.1f" % ri)
+
+                if i == 0:
+                    rt, rti = rt0, rti0
+                ar = (r[0] + r[1] + r[2]) / 3
+                ari = (ri[0] + ri[1] + ri[2]) / 3
+                rsum = r[0] + r[1] + r[2] + ri[0] + ri[1] + ri[2]
+                print("rsum: %.1f ar: %.1f ari: %.1f" % (rsum, ar, ari))
+                results += [list(r) + list(ri) + [ar, ari, rsum]]
+
+            print("-----------------%s------------------" % module_names[j])
+            print("Mean metrics: ")
+            mean_metrics = tuple(np.array(results).mean(axis=0).flatten())
+            print("rsum: %.1f" % (mean_metrics[10] * 6))
+            print("Average i2t Recall: %.1f" % mean_metrics[11])
+            print("Image to text: %.1f %.1f %.1f %.1f %.1f" %
+                  mean_metrics[:5])
+            print("Average t2i Recall: %.1f" % mean_metrics[12])
+            print("Text to image: %.1f %.1f %.1f %.1f %.1f" %
+                  mean_metrics[5:10])
+            print("---------------------------------------")
+
+def shard_attn_scores(model, img_embs, cap_embs, cap_lens, opt, shard_size=100):
+    n_im_shard = (len(img_embs) - 1) // shard_size + 1
+    n_cap_shard = (len(cap_embs) - 1) // shard_size + 1
+
+    sims = np.zeros((len(img_embs), len(cap_embs)))
+    for i in range(n_im_shard):
+        im_start, im_end = shard_size * i, min(shard_size * (i + 1), len(img_embs))
+        for j in range(n_cap_shard):
+            sys.stdout.write('\r>> shard_attn_scores batch (%d,%d)' % (i, j))
+            ca_start, ca_end = shard_size * j, min(shard_size * (j + 1), len(cap_embs))
+
+            with torch.no_grad():
+                im = torch.from_numpy(img_embs[im_start:im_end]).float().cuda()
+                ca = torch.from_numpy(cap_embs[ca_start:ca_end]).float().cuda()
+                l = cap_lens[ca_start:ca_end]
+                sim = model.forward_sim(im, ca, l)
+
+            sims[im_start:im_end, ca_start:ca_end] = sim.data.cpu().numpy()
+    sys.stdout.write('\n')
+    return sims
+
+
+def i2t(images, captions, caplens, sims, npts=None, return_ranks=False, img_div=5):
+    """
+    Images->Text (Image Annotation)
+    Images: (N, n_region, d) matrix of images
+    Captions: (5N, max_n_word, d) matrix of captions
+    CapLens: (5N) array of caption lengths
+    sims: (N, 5N) matrix of similarity im-cap
+    """
+    npts = sims.shape[0]
+    ranks = np.zeros(npts)
+    top1 = np.zeros(npts)
+    # img_div = int(sims.shape[1] / sims.shape[0])
+
+    for index in range(npts):
+        inds = np.argsort(sims[index])[::-1]
+
+        # Score
+        rank = 1e20
+        for i in range(img_div * index, img_div * index + img_div, 1):
+            tmp = np.where(inds == i)[0][0]
+            if tmp < rank:
+                rank = tmp
+        ranks[index] = rank
+        top1[index] = inds[0]
+
+    # Compute metrics
+    r1 = 100.0 * len(np.where(ranks < 1)[0]) / len(ranks)
+    r5 = 100.0 * len(np.where(ranks < 5)[0]) / len(ranks)
+    r10 = 100.0 * len(np.where(ranks < 10)[0]) / len(ranks)
+    medr = np.floor(np.median(ranks)) + 1
+    meanr = ranks.mean() + 1
+    if return_ranks:
+        return (r1, r5, r10, medr, meanr), (ranks, top1)
+    else:
+        return (r1, r5, r10, medr, meanr)
+
+
+def t2i(images, captions, caplens, sims, npts=None, return_ranks=False, img_div=5):
+    """
+    Text->Images (Image Search)
+    Images: (N, n_region, d) matrix of images
+    Captions: (5N, max_n_word, d) matrix of captions
+    CapLens: (5N) array of caption lengths
+    sims: (N, 5N) matrix of similarity im-cap
+    """
+    # img_div = int(sims.shape[1] / sims.shape[0])
+
+    npts = sims.shape[0]
+    ranks = np.zeros(img_div * npts)
+    top1 = np.zeros(img_div * npts)
+
+    # --> (5N(caption), N(image))
+    sims = sims.T
+
+    for index in range(npts):
+        for i in range(img_div):
+            inds = np.argsort(sims[img_div * index + i])[::-1]
+            ranks[img_div * index + i] = np.where(inds == index)[0][0]
+            top1[img_div * index + i] = inds[0]
+
+    # Compute metrics
+    r1 = 100.0 * len(np.where(ranks < 1)[0]) / len(ranks)
+    r5 = 100.0 * len(np.where(ranks < 5)[0]) / len(ranks)
+    r10 = 100.0 * len(np.where(ranks < 10)[0]) / len(ranks)
+    medr = np.floor(np.median(ranks)) + 1
+    meanr = ranks.mean() + 1
+    if return_ranks:
+        return (r1, r5, r10, medr, meanr), (ranks, top1)
+    else:
+        return (r1, r5, r10, medr, meanr)
+
+
+if __name__ == '__main__':
+    evalrank("runs_new/coco/checkpoint/coco_precomp_SGR_model_best_0.2_0_0.6_0.1.pth.tar",
+             data_path="../SCAN/data/data", split="testall", fold5=False)
+
