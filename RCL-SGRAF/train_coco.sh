@@ -1,23 +1,23 @@
 tau=0.05
 batch_size=128
 noise_rate=0.2
-module_name=SGR
 data_name=coco_precomp
-vocab_path=../data/vocab
-data_path=../data/
 loss='log'
 margin=0.2
-ratio=-1
-gpu=0
-
+lambda_softmax=10
+num_epochs=20
+lr_update=5
+embed_size=1024
+batch_size=128
+data_path=../../data/data/
+vocab_path=../data/vocab
+learning_rate=.0005
+gpu=1
 model_name=runs/$data_name/checkpoint
 logger_name=runs/$data_name/log
 
-module_name=SGR
-CUDA_VISIBLE_DEVICES=$gpu python train.py --data_name $data_name --num_epochs 20 --lr_update 10 --module_name $module_name --loss $loss --log_step 200 --data_path $data_pathdata --vocab_path $vocab_path --model_name $model_name --logger_name $logger_name --noise_rate $noise_rate --margin $margin --tau $tau --ratio $ratio
+# GSMN-sparse
+CUDA_VISIBLE_DEVICES=$gpu python train.py --data_path $data_path --data_name $data_name --vocab_path $vocab_path --logger_name $logger_name --model_name $model_name --bi_gru --max_violation --lambda_softmax=$lambda_softmax --num_epochs=$num_epochs --lr_update=$lr_update --learning_rate=$learning_rate --embed_size=$embed_size --batch_size=$batch_size --is_sparse
 
-module_name=SAF
-CUDA_VISIBLE_DEVICES=$gpu python train.py --data_name $data_name --num_epochs 20 --lr_update 10 --module_name $module_name --loss $loss --log_step 200 --data_path $data_pathdata --vocab_path $vocab_path --model_name $model_name --logger_name $logger_name --noise_rate $noise_rate --margin $margin --tau $tau --ratio $ratio
-
-CUDA_VISIBLE_DEVICES=$gpu python evaluate_model.py --data_name $data_name --num_epochs 20 --lr_update 10 --module_name SGRAF --loss $loss --log_step 200 --data_path $data_path --vocab_path $vocab_path --model_name $model_name --logger_name $logger_name --noise_rate $noise_rate --margin $margin --tau $tau --ratio $ratio
-
+# GSMN-dense
+CUDA_VISIBLE_DEVICES=$gpu python train.py --data_path $data_path --data_name $data_name --vocab_path $vocab_path --logger_name $logger_name --model_name $model_name --bi_gru --max_violation --lambda_softmax=$lambda_softmax --num_epochs=$num_epochs --lr_update=$lr_update --learning_rate=$learning_rate --embed_size=$embed_size --batch_size=$batch_size

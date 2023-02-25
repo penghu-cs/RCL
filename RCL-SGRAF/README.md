@@ -1,107 +1,93 @@
-# RCL-SGRAF
+# RCL-GSMN
 *PyTorch implementation for IEEE TPAMI 2023 paper of [**“Cross-Modal Retrieval with Partially Mismatched Pairs”**](https://doi.org/10.1109/TPAMI.2023.3247939).* 
 
-*It is built on top of the [SCAN](https://github.com/kuanghuei/SCAN) and [SGRAF](https://github.com/Paranioar/SGRAF).* 
-
-<!-- *We have released two versions of SGRAF: **Branch `main` for python2.7**; **Branch `python3.6` for python3.6**.*  -->
+*It is built on top of the [GSMN](https://github.com/CrossmodalGroup/GSMN).* 
 
 ## Introduction
-
 **The framework of RCL:**
+<img src="../fig/RCL.png" width = "100%" height="50%">
 
-<img src="./fig/RCL.png" width = "100%" height="50%">
+## Requirements and Installation
+We recommended the following dependencies.
 
-**The framework of SGRAF:**
+* Python 2.7
+* [PyTorch](http://pytorch.org/) 1.1.0
+* [NumPy](http://www.numpy.org/) (>1.12.1)
+* [TensorBoard](https://github.com/TeamHG-Memex/tensorboard_logger)
 
-<img src="./fig/model.png" width = "100%" height="50%">
+<!-- ## Pretrained model
+If you don't want to train from scratch, you can download the pretrained GSMN model from [here](https://drive.google.com/file/d/1kEi92w49Et5D2WVOv-Lc52HcpF2SPNNF/view?usp=sharing)(for Flickr30K dense model) and [here](https://drive.google.com/file/d/1vTPDToCJNLPU80K0ISXRmpSzys6-MjBT/view?usp=sharing)(for Flickr30K sparse model). The performance of this pretrained single model is as follows, in which some Recall@1 values are even better than results produced by our paper:
+```bash
+GSMN-dense:
+rsum: 481.4
+Average i2t Recall: 87.0
+Image to text: 74.4 91.1 95.4 1.0 3.4
+Average t2i Recall: 73.5
+Text to image: 54.1 79.9 86.5 1.0 9.4
 
-## Partial experimental results
-**TABLE 5: Comparison with NCR [43] under different mismatching rates (MRate) on MS-COCO and Flickr30K.**
-<img src="./fig/Tables_4.png" width = "100%" height="50%">
+GSMN-sparse:
+rsum: 476.8
+Average i2t Recall: 86.5
+Image to text: 72.8 91.0 95.8 1.0 4.0
+Average t2i Recall: 72.4
+Text to image: 52.8 78.8 85.6 1.0 10.1
+``` -->
 
-**TABLE 6: Comparison of SGR [5] with different presented loss functions under the mismatching rates (MRate) of 0.6 on MS-COCO.**
 
-<img src="./fig/Tables_5.png" width = "70%" height="50%">
+## Download data
+Download the dataset files. We use the image feature created by SCAN, downloaded [here](https://github.com/kuanghuei/SCAN). The text feature, image bounding box and semantic dependency are precomputed, and can be downloaded from [here](https://drive.google.com/file/d/1ZVLIN7uSh3dqYAEldelyYF2ei9vicJvZ/view?usp=sharing) (for Flickr30K and MSCOCO) 
 
-
-**TABLE 8: Comparison with filtering-based baselines under different mismatching rates (MRate) on MS-COCO 1K and
-Flickr30K.**
-<img src="./fig/Tables_6.png" width = "100%" height="50%">
-
-## Requirements 
-We recommended the following dependencies for ***Branch `main`***.
-
-*  python 3.6
-*  [PyTorch (>=0.4.1)](http://pytorch.org/)    
-*  [NumPy (>=1.12.1)](http://www.numpy.org/)   
-*  [TensorBoard](https://github.com/TeamHG-Memex/tensorboard_logger)  
-*  Punkt Sentence Tokenizer:
-```python
-import nltk
-nltk.download()
-> d punkt
-```
-
-## Download data and vocab
-We follow [SCAN](https://github.com/kuanghuei/SCAN) to obtain image features and vocabularies, which can be downloaded by using:
+## Training
 
 ```bash
-wget https://scanproject.blob.core.windows.net/scan-data/data.zip
-wget https://scanproject.blob.core.windows.net/scan-data/vocab.zip
+python train.py --data_path "$DATA_PATH" --data_name f30k_precomp --vocab_path "$VOCAB_PATH" --logger_name runs/log --model_name "$MODEL_PATH" --bi_gru
 ```
 
-## Training new models from scratch
-Modify the **data_path**, **vocab_path**, **model_name**, **logger_name** in the `opts.py` file. Then run `train.py`:
+Arguments used to train Flickr30K models and MSCOCO models are similar with those of SCAN:
+
+For Flickr30K:
+
+| Method      | Arguments |
+| :---------: | :-------: |
+|  GSMN-dense   | `--max_violation --lambda_softmax=20 --num_epochs=30 --lr_update=15 --learning_rate=.0002 --embed_size=1024 --batch_size=64 `|
+|  GSMN-sparse    | `--max_violation --lambda_softmax=20 --num_epochs=30 --lr_update=15 --learning_rate=.0002 --embed_size=1024 --batch_size=64 --is_sparse `| 
 
 For MSCOCO:
-```bash
-# For SGR
-python train.py --data_name coco_precomp --num_epochs 20 --lr_update 10 --module_name SGR
 
-# For SAF
-python train.py --data_name coco_precomp --num_epochs 20 --lr_update 10 --module_name SAF
+| Method      | Arguments |
+| :---------: | :-------: |
+|  GSMN-dense   | `--max_violation --lambda_softmax=10 --num_epochs=20 --lr_update=5 --learning_rate=.0005 --embed_size=1024 --batch_size=32 `|
+|  GSMN-sparse    | `--max_violation --lambda_softmax=10 --num_epochs=20 --lr_update=5 --learning_rate=.0005 --embed_size=1024 --batch_size=32 --is_sparse `|
+
+## Evaluation
+
+Test on Flickr30K
+```bash
+python test.py
 ```
 
-For Flickr30K:
-```bash
-# For SGR
-python train.py --data_name f30k_precomp --num_epochs 40 --lr_update 30 --module_name SGR
+To do cross-validation on MSCOCO, pass `fold5=True` with a model trained using 
+`--data_name coco_precomp`.
 
-# For SAF
-python train.py --data_name f30k_precomp --num_epochs 30 --lr_update 20 --module_name SAF
+```bash
+python testall.py
 ```
 
-## Pre-trained models and evaluation
-For Flickr30K:
+To ensemble sparse model and dense model, specify the model_path in test_stack.py, and run
 ```bash
-# For SGR
-python evaluate_model.py --data_name f30k_precomp --module_name SGR
-
-# For SAF
-python evaluate_model.py --data_name f30k_precomp --module_name SAF
-
-# For SGRAF
-python evaluate_model.py --data_name f30k_precomp --module_name SGRAF
+python test_stack.py
 ```
 
-## Reference
+<!-- ## Reference
 
-If RCL is useful for your research, please cite the following paper:
-
-    @article{hu2023cross,
-        author={Hu, Peng and Huang, Zhenyu and Peng, Dezhong and Wang, Xu and Peng, Xi},
-          journal={IEEE Transactions on Pattern Analysis and Machine Intelligence}, 
-          title={Cross-Modal Retrieval with Partially Mismatched Pairs}, 
-          year={2023},
-          volume={},
-          number={},
-          pages={1-15},
-          doi={10.1109/TPAMI.2023.3247939}
-     }
-
-## License
-
-[Apache License 2.0](http://www.apache.org/licenses/LICENSE-2.0).  
-If any problems, please contact me at (penghu.ml@gmail.com)
-
+If you found this code useful, please cite the following paper:
+```
+@inproceedings{liu2020graph,
+  title={Graph Structured Network for Image-Text Matching},
+  author={Liu, Chunxiao and Mao, Zhendong and Zhang, Tianzhu and Xie, Hongtao and Wang, Bin and Zhang, Yongdong},
+  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
+  pages={10921--10930},
+  year={2020}
+}
+``` -->
 

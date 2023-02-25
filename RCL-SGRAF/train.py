@@ -1,11 +1,12 @@
-"""
-# Pytorch implementation for AAAI2021 paper from
-# https://arxiv.org/pdf/2101.01368.
-# "Similarity Reasoning and Filtration for Image-Text Matching"
-# Haiwen Diao, Ying Zhang, Lin Ma, Huchuan Lu
+# -------------------------------------------------------------------------------------
+# Graph Structured Network for Image-Text Matching implementation based on
+# https://arxiv.org/abs/2004.00277.
+# "Graph Structured Network for Image-Text Matching"
+# Chunxiao Liu, Zhendong Mao, Tianzhu Zhang, Hongtao Xie, Bin Wang, Yongdong Zhang
 #
-# Writen by Haiwen Diao, 2020
-"""
+# Writen by Chunxiao Liu, 2020
+# -------------------------------------------------------------------------------------
+"""Training script"""
 
 import os
 import time
@@ -15,46 +16,125 @@ import torch
 import numpy
 
 import data
-import opts
 from vocab import Vocabulary, deserialize_vocab
-from model import SGRAF
-from evaluation import i2t, t2i, AverageMeter, LogCollector, encode_data, shard_attn_scores
+from model import GSMN
+from evaluation import i2t, t2i, AverageMeter, LogCollector, encode_data, shard_xattn
+from torch.autograd import Variable
 
 import logging
 import tensorboard_logger as tb_logger
 
-#os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+import argparse
 
 
 def main():
-    opt = opts.parse_opt()
+    # Hyper Parameters
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data_path', default='./data/',
+                        help='path to datasets')
+    parser.add_argument('--data_name', default='precomp',
+                        help='{coco,f30k}_precomp')
+    parser.add_argument('--vocab_path', default='./vocab/',
+                        help='Path to saved vocabulary json files.')
+    parser.add_argument('--margin', default=0.2, type=float,
+                        help='Rank loss margin.')
+    parser.add_argument('--num_epochs', default=30, type=int,
+                        help='Number of training epochs.')
+    parser.add_argument('--batch_size', default=128, type=int,
+                        help='Size of a training mini-batch.')
+    parser.add_argument('--word_dim', default=300, type=int,
+                        help='Dimensionality of the word embedding.')
+    parser.add_argument('--embed_size', default=1024, type=int,
+                        help='Dimensionality of the joint embedding.')
+    parser.add_argument('--grad_clip', default=2., type=float,
+                        help='Gradient clipping threshold.')
+    parser.add_argument('--num_layers', default=1, type=int,
+                        help='Number of GRU layers.')
+    parser.add_argument('--learning_rate', default=.0002, type=float,
+                        help='Initial learning rate.')
+    parser.add_argument('--lr_update', default=15, type=int,
+                        help='Number of epochs to update the learning rate.')
+    parser.add_argument('--workers', default=10, type=int,
+                        help='Number of data loader workers.')
+    parser.add_argument('--log_step', default=100, type=int,
+                        help='Number of steps to print and record the log.')
+    parser.add_argument('--val_step', default=15000, type=int,
+                        help='Number of steps to run validation.')
+    parser.add_argument('--logger_name', default='./runs/runX/log',
+                        help='Path to save Tensorboard log.')
+    parser.add_argument('--model_name', default='./runs/runX/checkpoint',
+                        help='Path to save the model.')
+    parser.add_argument('--resume', default='', type=str, metavar='PATH',
+                        help='path to latest checkpoint (default: none)')
+    parser.add_argument('--max_violation', action='store_true',
+                        help='Use max instead of sum in the rank loss.')
+    parser.add_argument('--img_dim', default=2048, type=int,
+                        help='Dimensionality of the image embedding.')
+    parser.add_argument('--no_imgnorm', action='store_true',
+                        help='Do not normalize the image embeddings.')
+    parser.add_argument('--no_txtnorm', action='store_true',
+                        help='Do not normalize the text embeddings.')
+    parser.add_argument('--bi_gru', action='store_true',
+                        help='Use bidirectional GRU.')
+    parser.add_argument('--lambda_softmax', default=9., type=float,
+                        help='Attention softmax temperature.')
+    parser.add_argument('--feat_dim', default=16, type=int,
+                        help='Dimensionality of the similarity embedding.')
+    parser.add_argument('--num_block', default=16, type=int,
+                        help='Dimensionality of the similarity embedding.')
+    parser.add_argument('--hid_dim', default=32, type=int,
+                        help='Dimensionality of the hidden state during graph convolution.')
+    parser.add_argument('--out_dim', default=1, type=int,
+                        help='Dimensionality of the hidden state during graph convolution.')
+    parser.add_argument('--is_sparse', action='store_true',
+                        help='Whether model the text as a fully connected graph.')
+    parser.add_argument('--noise_rate', default=0.2, type=float,
+                        help='Noise rate.')
+    parser.add_argument('--tau', default=0.05, type=float,
+                        help='Temperature')
+    parser.add_argument('--ratio', default=-1, type=float,
+                        help='ratio')
+    parser.add_argument('--loss', default='log', 
+                        help='{log, tan, abs, exp, gce, max-margin, infoNCE}')
+    
+    opt = parser.parse_args()
+    print(opt)
+
     logging.basicConfig(format='%(asctime)s %(message)s', level=logging.INFO)
     tb_logger.configure(opt.logger_name, flush_secs=5)
 
     # Load Vocabulary Wrapper
-    vocab = deserialize_vocab(os.path.join(opt.vocab_path, '%s_vocab.json' % opt.data_name))
-    vocab.add_word('<mask>')
+    vocab = deserialize_vocab(os.path.join(
+        opt.vocab_path, '%s_vocab.json' % opt.data_name))
     opt.vocab_size = len(vocab)
 
     # Load data loaders
-    train_loader, val_loader = data.get_loaders(opt.data_name, vocab, opt.batch_size, opt.workers, opt)
+    train_loader, val_loader = data.get_loaders(
+        opt.data_name, vocab, opt.batch_size, opt.workers, opt)
 
     # Construct the model
-    model = SGRAF(opt)
+    model = GSMN(opt)
+
+    # optionally resume from a checkpoint
+    if opt.resume:
+        if os.path.isfile(opt.resume):
+            print("=> loading checkpoint '{}'".format(opt.resume))
+            checkpoint = torch.load(opt.resume)
+            start_epoch = checkpoint['epoch']
+            best_rsum = checkpoint['best_rsum']
+            model.load_state_dict(checkpoint['model'])
+            # Eiters is used to show logs as the continuation of another
+            # training
+            model.Eiters = checkpoint['Eiters']
+            print("=> loaded checkpoint '{}' (epoch {}, best_rsum {})"
+                  .format(opt.resume, start_epoch, best_rsum))
+            validate(opt, val_loader, model)
+        else:
+            print("=> no checkpoint found at '{}'".format(opt.resume))
 
     # Train the Model
     best_rsum = 0
-    start_epoch = 0
-    if len(opt.resume) > 0:
-        # model_path = opt.best_model_filename
-        checkpoint = torch.load(opt.resume)
-        opt = checkpoint['opt']
-        start_epoch = checkpoint['epoch']
-        model.load_state_dict(checkpoint['model'])
-        opt.best_model_filename = ('%s_%s_model_best_%g_%g.pth.tar' % (opt.data_name, opt.module_name, opt.noise_rate, opt.margin))
-        print(opt)
-    # r_sum = validate(opt, val_loader, model)
-    for epoch in range(start_epoch, opt.num_epochs):
+    for epoch in range(opt.num_epochs):
         print(opt.logger_name)
         print(opt.model_name)
 
@@ -64,12 +144,11 @@ def main():
         train(opt, train_loader, model, epoch, val_loader)
 
         # evaluate on validation set
-        r_sum = validate(opt, val_loader, model)
+        rsum = validate(opt, val_loader, model)
 
         # remember best R@ sum and save checkpoint
-        is_best = r_sum > best_rsum
-        best_rsum = max(r_sum, best_rsum)
-
+        is_best = rsum > best_rsum
+        best_rsum = max(rsum, best_rsum)
         if not os.path.exists(opt.model_name):
             os.mkdir(opt.model_name)
         save_checkpoint({
@@ -78,8 +157,7 @@ def main():
             'best_rsum': best_rsum,
             'opt': opt,
             'Eiters': model.Eiters,
-        # }, is_best, filename='{}_{}_checkpoint_{}_{}_{}.pth.tar'.format(opt.data_name, opt.module_name, opt.noise_rate, opt.margin, epoch), prefix=opt.model_name + '/')
-        }, is_best, filename='{}_{}_checkpoint_{}_{}_{}.pth.tar'.format(opt.data_name, opt.module_name, opt.noise_rate, opt.loss, epoch), prefix=opt.model_name + '/')
+        }, is_best, filename='checkpoint_{}.pth.tar'.format(epoch), prefix=opt.model_name + '/')
 
 
 def train(opt, train_loader, model, epoch, val_loader):
@@ -89,7 +167,6 @@ def train(opt, train_loader, model, epoch, val_loader):
     train_logger = LogCollector()
 
     end = time.time()
-    # validate(opt, val_loader, model)
     for i, train_data in enumerate(train_loader):
         # switch to train mode
         model.train_start()
@@ -132,27 +209,29 @@ def train(opt, train_loader, model, epoch, val_loader):
 
 def validate(opt, val_loader, model):
     # compute the encoding for all the validation images and captions
-    img_embs, cap_embs, cap_lens = encode_data(model, val_loader, opt.log_step, logging.info)
-    img_div = 1 if 'cc152k' in opt.data_name else 5 #int(val_loader.dataset.im_div)
-    # clear duplicate 5*images and keep 1*images
-    img_embs = numpy.array([img_embs[i] for i in range(0, len(img_embs), img_div)])
+    img_embs, cap_embs, bboxes, depends, cap_lens = encode_data(
+        model, val_loader, opt.log_step, logging.info)
 
-    # record computation time of validation
+    img_embs = numpy.array([img_embs[i] for i in range(0, len(img_embs), 5)])
+
     start = time.time()
-    sims = shard_attn_scores(model, img_embs, cap_embs, cap_lens, opt, shard_size=100)
+    sims = shard_xattn(model, img_embs, cap_embs, bboxes, depends, cap_lens,
+                       opt, shard_size=64)  # changed from 128 to 64
     end = time.time()
-    print("calculate similarity time:", end-start)
+    print("calculate similarity time:", end - start)
 
     # caption retrieval
-    (r1, r5, r10, medr, meanr) = i2t(img_embs, cap_embs, cap_lens, sims, img_div=img_div)
-    logging.info("Image to text: %.1f, %.1f, %.1f, %.1f, %.1f" % (r1, r5, r10, medr, meanr))
 
+    (r1, r5, r10, medr, meanr) = i2t(img_embs, sims)
+    logging.info("Image to text: %.1f, %.1f, %.1f, %.1f, %.1f" %
+                 (r1, r5, r10, medr, meanr))
     # image retrieval
-    (r1i, r5i, r10i, medri, meanr) = t2i(img_embs, cap_embs, cap_lens, sims, img_div=img_div)
-    logging.info("Text to image: %.1f, %.1f, %.1f, %.1f, %.1f" % (r1i, r5i, r10i, medri, meanr))
-
+    (r1i, r5i, r10i, medri, meanr) = t2i(
+        img_embs, sims)
+    logging.info("Text to image: %.1f, %.1f, %.1f, %.1f, %.1f" %
+                 (r1i, r5i, r10i, medri, meanr))
     # sum of recalls to be used for early stopping
-    r_sum = r1 + r5 + r10 + r1i + r5i + r10i
+    currscore = r1 + r5 + r10 + r1i + r5i + r10i
 
     # record metrics in tensorboard
     tb_logger.log_value('r1', r1, step=model.Eiters)
@@ -165,9 +244,9 @@ def validate(opt, val_loader, model):
     tb_logger.log_value('r10i', r10i, step=model.Eiters)
     tb_logger.log_value('medri', medri, step=model.Eiters)
     tb_logger.log_value('meanr', meanr, step=model.Eiters)
-    tb_logger.log_value('r_sum', r_sum, step=model.Eiters)
+    tb_logger.log_value('rsum', currscore, step=model.Eiters)
 
-    return r_sum
+    return currscore
 
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar', prefix=''):
@@ -175,13 +254,12 @@ def save_checkpoint(state, is_best, filename='checkpoint.pth.tar', prefix=''):
     error = None
 
     # deal with unstable I/O. Usually not necessary.
-    opt = state['opt']
     while tries:
         try:
             torch.save(state, prefix + filename)
             if is_best:
-                print('====================Saving the Best Model========================')
-                shutil.copyfile(prefix + filename, prefix + opt.best_model_filename)
+                shutil.copyfile(prefix + filename, prefix +
+                                'model_best.pth.tar')
         except IOError as e:
             error = e
             tries -= 1
@@ -193,13 +271,27 @@ def save_checkpoint(state, is_best, filename='checkpoint.pth.tar', prefix=''):
 
 
 def adjust_learning_rate(opt, optimizer, epoch):
-    """
-    Sets the learning rate to the initial LR
-    decayed by 10 after opt.lr_update epoch
-    """
+    """Sets the learning rate to the initial LR
+       decayed by 10 every 30 epochs"""
     lr = opt.learning_rate * (0.1 ** (epoch // opt.lr_update))
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
+
+
+def accuracy(output, target, topk=(1,)):
+    """Computes the precision@k for the specified values of k"""
+    maxk = max(topk)
+    batch_size = target.size(0)
+
+    _, pred = output.topk(maxk, 1, True, True)
+    pred = pred.t()
+    correct = pred.eq(target.view(1, -1).expand_as(pred))
+
+    res = []
+    for k in topk:
+        correct_k = correct[:k].view(-1).float().sum(0)
+        res.append(correct_k.mul_(100.0 / batch_size))
+    return res
 
 
 if __name__ == '__main__':

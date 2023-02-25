@@ -1,15 +1,26 @@
+# -------------------------------------------------------------------------------------
+# Graph Structured Network for Image-Text Matching implementation based on
+# https://arxiv.org/abs/2004.00277.
+# "Graph Structured Network for Image-Text Matching"
+# Chunxiao Liu, Zhendong Mao, Tianzhu Zhang, Hongtao Xie, Bin Wang, Yongdong Zhang
+#
+# Writen by Chunxiao Liu, 2020
+# ---------------------------------------------------------------
 """Data provider"""
+
 
 import torch
 import torch.utils.data as data
-
+import torchvision.transforms as transforms
 import os
-import nltk
+from PIL import Image
 import numpy as np
-import scipy.io as sio
+import json as jsonmod
+import pandas as pd
 import json
+import nltk
 import csv
-import random
+
 
 class PrecompDataset(data.Dataset):
     """
@@ -17,24 +28,23 @@ class PrecompDataset(data.Dataset):
     Possible options: f30k_precomp, coco_precomp
     """
 
-    def __init__(self, data_path, data_split, vocab, opt=None):
+    def __init__(self, data_path, data_split, vocab, opt):
         self.vocab = vocab
         loc = data_path + '/'
-        # load the raw captions
+
+        # Captions
         self.captions = []
-        if 'cc152k_precomp' in data_path:
-            with open(os.path.join(data_path, '%s_caps.tsv' % data_split), encoding='utf-8') as f:
-                tsvreader = csv.reader(f, delimiter='\t')
-                for line in tsvreader:
-                    self.captions.append(line[1].strip())
-        else:
-            with open(loc + '%s_caps.txt' % data_split, 'rb') as f:
-                for line in f.readlines():
-                    self.captions.append(line.strip())
+        with open(loc + '%s_precaps_stan.txt' % data_split, 'rb') as f:
+            for line in f:
+                self.captions.append(str(line, 'utf-8').strip())
 
-        # load the image features
-        self.images = np.load(loc+'%s_ims.npy' % data_split)
+        # Image features
+        self.images = np.load(loc + '%s_ims.npy' % data_split)
+        self.length = len(self.captions)
 
+        self.bbox = np.load(loc + '%s_ims_bbx.npy' % data_split, allow_pickle=True)
+        self.sizes = np.load(loc + '%s_ims_size.npy' % data_split, allow_pickle=True)
+        
         self.img_len = self.images.shape[0]
         self.noisy_inx = np.arange(self.img_len)
         if data_split == 'train' and opt.noise_rate > 0:
@@ -57,13 +67,19 @@ class PrecompDataset(data.Dataset):
                 print('Noisy rate: %g' % noise_rate)
         self.length = len(self.captions)
 
-        # rkiros data has redundancy in images, we divide by 5
-        if self.img_len != self.length:
+        with open(loc + '%s_caps.json' % data_split) as f:
+            self.depends = json.load(f)
+
+        print('image shape', self.images.shape)
+        print('text shape', len(self.captions))
+
+        # rkiros data has redundancy in images, we divide by 5, 10crop doesn't
+        if self.images.shape[0] != self.length:
             self.im_div = 5
         else:
             self.im_div = 1
         # the development set for coco is large and so validation would be slow
-        if data_split == 'dev' and self.length >= 5000:
+        if data_split == 'dev':
             self.length = 5000
 
     def __getitem__(self, index):
@@ -72,39 +88,56 @@ class PrecompDataset(data.Dataset):
         image = torch.Tensor(self.images[img_id])
         caption = self.captions[index]
         vocab = self.vocab
+        depend = self.depends[index]
 
-        # convert caption (string) to word ids.
-        tokens = nltk.tokenize.word_tokenize(
-            # str(caption).lower().decode('utf-8'))
-            str(caption, 'utf-8').lower())
-        caption = []
-        caption.append(vocab('<start>'))
-        caption.extend([vocab(token) for token in tokens])
-        caption.append(vocab('<end>'))
-        target = torch.Tensor(caption)
-        return image, target, index, img_id
-    
+        # Convert caption (string) to word ids.
+        # caps = []
+        # caps.extend(caption.split(','))
+        # caps = map(int, caps)
+        caps = [int(i) for i in caption.split(',')]
+
+        # Load bbox and its size
+        bboxes = self.bbox[img_id]
+        imsize = self.sizes[img_id]
+        # k sample
+        k = image.shape[0]
+        assert k == 36
+
+        for i in range(k):
+            bbox = bboxes[i]
+            bbox[0] /= imsize['image_w']
+            bbox[1] /= imsize['image_h']
+            bbox[2] /= imsize['image_w']
+            bbox[3] /= imsize['image_h']
+            bboxes[i] = bbox
+
+        captions = torch.Tensor(caps)
+        bboxes = torch.Tensor(bboxes)
+        return image, captions, bboxes, depend, index, img_id
+
     def __len__(self):
         return self.length
-    
+
+
 def collate_fn(data):
-    """
-    Build mini-batch tensors from a list of (image, caption, index, img_id) tuples.
+    """Build mini-batch tensors from a list of (image, caption) tuples.
     Args:
-        data: list of (image, target, index, img_id) tuple.
-            - image: torch tensor of shape (36, 2048).
-            - target: torch tensor of shape (?) variable length.
+        data: list of (image, caption) tuple.
+            - image: torch tensor of shape (3, 256, 256).
+            - caption: torch tensor of shape (?); variable length.
+
     Returns:
-        - images: torch tensor of shape (batch_size, 36, 2048).
-        - targets: torch tensor of shape (batch_size, padded_length).
-        - lengths: list; valid length for each padded caption.
+        images: torch tensor of shape (batch_size, 3, 256, 256).
+        targets: torch tensor of shape (batch_size, padded_length).
+        lengths: list; valid length for each padded caption.
     """
     # Sort a data list by caption length
     data.sort(key=lambda x: len(x[1]), reverse=True)
-    images, captions, ids, img_ids = zip(*data)
+    images, captions, bboxes, depends, ids, img_ids = zip(*data)
 
-    # Merge images (convert tuple of 2D tensor to 3D tensor)
+    # Merge images (convert tuple of 3D tensor to 4D tensor)
     images = torch.stack(images, 0)
+    bboxes = torch.stack(bboxes, 0)
 
     # Merget captions (convert tuple of 1D tensor to 2D tensor)
     lengths = [len(cap) for cap in captions]
@@ -113,40 +146,34 @@ def collate_fn(data):
         end = lengths[i]
         targets[i, :end] = cap[:end]
 
-    return images, targets, lengths, ids
+    return images, targets, bboxes, depends, lengths, ids
 
 
 def get_precomp_loader(data_path, data_split, vocab, opt, batch_size=100,
                        shuffle=True, num_workers=2):
+    """Returns torch.utils.data.DataLoader for custom coco dataset."""
     dset = PrecompDataset(data_path, data_split, vocab, opt)
 
     data_loader = torch.utils.data.DataLoader(dataset=dset,
                                               batch_size=batch_size,
                                               shuffle=shuffle,
                                               pin_memory=True,
-                                              collate_fn=collate_fn,
-                                              num_workers=num_workers)
+                                              collate_fn=collate_fn)
     return data_loader
 
 
 def get_loaders(data_name, vocab, batch_size, workers, opt):
-    # get the data path
     dpath = os.path.join(opt.data_path, data_name)
-
-    # get the train_loader
     train_loader = get_precomp_loader(dpath, 'train', vocab, opt,
                                       batch_size, True, workers)
-    # get the val_loader
     val_loader = get_precomp_loader(dpath, 'dev', vocab, opt,
-                                    100, False, workers)
+                                    batch_size, False, workers)
     return train_loader, val_loader
 
 
-def get_test_loader(split_name, data_name, vocab, batch_size, workers, opt):
-    # get the data path
+def get_test_loader(split_name, data_name, vocab, batch_size,
+                    workers, opt):
     dpath = os.path.join(opt.data_path, data_name)
-
-    # get the test_loader
     test_loader = get_precomp_loader(dpath, split_name, vocab, opt,
-                                     100, False, workers)
+                                     batch_size, False, workers)
     return test_loader

@@ -1,10 +1,10 @@
 # -----------------------------------------------------------
-# Stacked Cross Attention Network implementation based on 
-# https://arxiv.org/abs/1803.08024.
+# Graph Structured Network for Image-Text Matching implementation based on
 # "Stacked Cross Attention for Image-Text Matching"
-# Kuang-Huei Lee, Xi Chen, Gang Hua, Houdong Hu, Xiaodong He
+# Chunxiao Liu, Zhendong Mao, Tianzhu Zhang, Hongtao Xie, Bin Wang, Yongdong Zhang
+# https://arxiv.org/abs/2004.00277.
 #
-# Writen by Kuang-Huei Lee, 2018
+# Writen by Chunxiao Liu, 2020
 # ---------------------------------------------------------------
 """Vocabulary wrapper"""
 
@@ -53,6 +53,7 @@ def serialize_vocab(vocab, dest):
 
 
 def deserialize_vocab(src):
+    print(src)
     with open(src) as f:
         d = json.load(f)
     vocab = Vocabulary()
@@ -101,15 +102,16 @@ def build_vocab(data_path, data_name, caption_file, threshold):
 
 
 def main(data_path, data_name):
-    vocab = build_vocab(data_path, data_name, caption_file=annotations, threshold=4)
+    vocab = build_vocab(data_path, data_name,
+                        caption_file=annotations, threshold=4)
     serialize_vocab(vocab, './vocab/%s_vocab.json' % data_name)
     print("Saved vocabulary file to ", './vocab/%s_vocab.json' % data_name)
-
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--data_path', default='data')
-    parser.add_argument('--data_name', default='f30k_precomp', help='{coco,f30k}_precomp')
+    parser.add_argument('--data_name', default='f30k_precomp',
+                        help='{coco,f30k}_precomp')
     opt = parser.parse_args()
     main(opt.data_path, opt.data_name)
