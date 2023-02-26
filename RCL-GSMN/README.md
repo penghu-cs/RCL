@@ -15,23 +15,23 @@ We recommended the following dependencies.
 * [NumPy](http://www.numpy.org/) (>1.12.1)
 * [TensorBoard](https://github.com/TeamHG-Memex/tensorboard_logger)
 
-<!-- ## Pretrained model
-If you don't want to train from scratch, you can download the pretrained GSMN model from [here](https://drive.google.com/file/d/1kEi92w49Et5D2WVOv-Lc52HcpF2SPNNF/view?usp=sharing)(for Flickr30K dense model) and [here](https://drive.google.com/file/d/1vTPDToCJNLPU80K0ISXRmpSzys6-MjBT/view?usp=sharing)(for Flickr30K sparse model). The performance of this pretrained single model is as follows, in which some Recall@1 values are even better than results produced by our paper:
+## Pretrained model
+If you don't want to train from scratch, you can download the pretrained GSMN model from [here](https://drive.google.com/file/d/1lacmJ-fTtLya71erXOHWE07WEE0WGpKl/view?usp=sharing)(for Flickr30K dense model under 20% noise) and [here](https://drive.google.com/file/d/1YL3ZT3wNuH_fnDccplSI_zFE6548rEJc/view?usp=sharing)(for Flickr30K sparse model under 20% noise). The performance of this pretrained single model is as follows, in which some Recall@1 values are even better than the results produced by our paper:
 ```bash
 GSMN-dense:
-rsum: 481.4
-Average i2t Recall: 87.0
-Image to text: 74.4 91.1 95.4 1.0 3.4
-Average t2i Recall: 73.5
-Text to image: 54.1 79.9 86.5 1.0 9.4
+rsum: 446.0
+Average i2t Recall: 81.7
+Image to text: 64.3 87.9 92.8 1.0 4.0
+Average t2i Recall: 67.0
+Text to image: 47.1 73.0 80.9 2.0 21.6
 
 GSMN-sparse:
-rsum: 476.8
-Average i2t Recall: 86.5
-Image to text: 72.8 91.0 95.8 1.0 4.0
-Average t2i Recall: 72.4
-Text to image: 52.8 78.8 85.6 1.0 10.1
-``` -->
+rsum: 453.2                                                                                                                                          
+Average i2t Recall: 82.8                                                                                                                             
+Image to text: 65.8 88.5 94.2 1.0 3.5                                                                                                                
+Average t2i Recall: 68.2                                                                                                                             
+Text to image: 47.5 74.4 82.8 2.0 13.7  
+```
 
 
 ## Download data
