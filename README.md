@@ -93,11 +93,11 @@ If RCL is useful for your research, please cite the following paper:
     @article{hu2023cross,
         author={Hu, Peng and Huang, Zhenyu and Peng, Dezhong and Wang, Xu and Peng, Xi},
         journal={IEEE Transactions on Pattern Analysis and Machine Intelligence}, 
-        title={Cross-Modal Retrieval with Partially Mismatched Pairs}, 
+        title={Cross-Modal Retrieval With Partially Mismatched Pairs}, 
         year={2023},
-        volume={},
-        number={},
-        pages={1-15},
+        volume={45},
+        number={8},
+        pages={9595-9610},
         doi={10.1109/TPAMI.2023.3247939}
      }
 
